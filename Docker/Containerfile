@@ -1,0 +1,13 @@
+# Use the official Fedora Bootc base image
+FROM quay.io/fedora/fedora-bootc:44
+
+# Install time synchronization and PTP packages
+RUN dnf -y install \
+    chrony \
+    linuxptp \
+    && dnf clean all
+
+# Enable services to run automatically at boot
+RUN systemctl enable chronyd \
+    && systemctl enable ptp4l
+
