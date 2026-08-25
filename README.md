@@ -40,6 +40,9 @@ podman run \
 >$ podman machine set --rootful
 >$ podman machine start
 
+### Booting Raspi from this
+
+Its not possible (at least I cant figure it out yet) to get the raspi to boot the first time from an original bootc image, instead we need to use fedoraIOT to bootstrap the sd card, and then we can bootc switch to our image.
 
 ### raw image needs to be updated once for boot on raspi
 
