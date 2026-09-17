@@ -49,3 +49,7 @@ Its not possible (at least I cant figure it out yet) to get the raspi to boot th
 will need a linux host to make this change, or need mac with qemu installed to boot it and add some files
 
 `arm-image-installer` looks like it can be used to make a bootable image
+
+# References
+
+https://supakeen.com/weblog/bootc-on-the-raspberry-pi/

@@ -1,11 +1,75 @@
+# ==========================================
+# STAGE 1: The Build Environment (The Builder)
+# ==========================================
+FROM golang:1.25-alpine AS builder
+
+RUN apk add --no-cache git make
+
+RUN git clone https://github.com/jclark/satpulse.git
+
+WORKDIR /go/satpulse
+
+# Static binary for scratch image (no libc dependency)
+RUN make
+
 #Use the official Fedora Bootc base image
 FROM quay.io/fedora/fedora-bootc:44
 
-RUN dnf -y install \
-    uboot-images-armv8 \
-    bcm283x-firmware \
-    bcm283x-overlays \
-    && dnf clean all
+RUN dnf install -qy \
+      bcm283x-firmware \
+      uboot-images-armv8
+
+RUN mkdir -p /usr/lib/bootc-rpi-firmware
+
+# `bcm283x-firmware` installs into `/boot/efi` directly, let's move
+# things into `/usr` so `bootupd` can later be adjusted to copy them
+# for us.
+RUN cp -rvP /boot/efi/*.dtb \
+            /boot/efi/*.bin \
+            /boot/efi/*.txt \
+            /boot/efi/*.dat \
+            /boot/efi/*.elf \
+            /boot/efi/overlays \
+            /usr/lib/bootc-rpi-firmware/
+
+# u-boot needs a different name
+RUN cp -vP /usr/share/uboot/rpi_arm64/u-boot.bin \
+           /usr/lib/bootc-rpi-firmware/rpi-u-boot.bin
+           
+# clean up
+RUN rm -rv /boot/efi && \
+    dnf remove -qy \
+      bcm283x-firmware \
+      uboot-images-armv8
+
+RUN dnf clean all && \
+    rm -rv /var/lib/dnf && \
+    rm -rv /var/cache/libdnf5 && \
+    rm -v /var/log/dnf5.log
+
+# make room for a wrapper around bootupd. this wrapper makes
+# makes sure we copy our additional firmware and config files.
+# this part might become obsolete (or replaced with a config
+# file) after: https://github.com/coreos/bootupd/issues/766
+# is addressed.
+RUN mkdir -p /usr/bin/bootupctl-original && \
+    mv /usr/bin/bootupctl /usr/bin/bootupctl-original
+
+RUN cat <<'EOF' > /usr/bin/bootupctl
+#!/bin/bash
+if [[ $# -ge 2 ]]; then
+    if [[ "$1" == "backend" && "$2" == "install" ]]; then
+        # BASH_ARGV[0] is the last argument. In the case of bootupctl backend install, it's the path to the target
+        # root directory.
+        echo "Copying Raspberry Pi firmware files to ${BASH_ARGV[0]}/boot/efi/" >&2
+        cp -av /usr/lib/bootc-rpi-firmware/. "${BASH_ARGV[0]}"/boot/efi/
+        echo "Copying Raspberry Pi firmware files finished" >&2
+    fi
+fi
+exec /usr/bin/bootupctl-original/bootupctl "$@"
+EOF
+
+RUN chmod +x /usr/bin/bootupctl
 
 # Install time synchronization and PTP packages
 RUN dnf -y install \
@@ -15,11 +79,28 @@ RUN dnf -y install \
     && dnf clean all
 
 # Commands for managing device with flightctl
-#RUN dnf config-manager addrepo --from-repofile=https://rpm.flightctl.io/flightctl-epel.repo \
-#    && dnf install -y flightctl-agent flightctl-cli\
-#    && dnf clean all
+RUN dnf config-manager addrepo --from-repofile=https://rpm.flightctl.io/flightctl-epel.repo \
+    && dnf install -y flightctl-agent flightctl-cli\
+    && dnf clean all
+
+# Install Satpulse
+COPY --from=builder /go/satpulse/out/arm64/satpulsed /usr/local/sbin/satpulsed
+COPY --from=builder /go/satpulse/out/arm64/satpulsetool /usr/local/bin/satpulsetool
+COPY --from=builder /go/satpulse/out/arm64/satpulsewb /usr/local/bin/satpulsewb
+COPY --from=builder /go/satpulse/configs/satpulse@.service /etc/systemd/system/satpulse@.service
+RUN mkdir -p /etc/satpulse.d
+COPY --from=builder /go/satpulse/configs/satpulse.toml /etc/satpulse.d/satpulse.toml
+
+# Enable Fan control
+COPY conf/raspi/em2305.conf /etc/modules-load.d/em2305.conf
 
 # Enable services to run automatically at boot
 RUN systemctl enable chronyd \
-    && systemctl enable ptp4l \
-    && systemctl enable flightctl-agent
+#    && systemctl enable ptp4l \
+    && systemctl enable flightctl-agent \
+    && systemctl disable ptp4l \
+    && systemctl disable getty@ttyAMA0 \
+    && systemctl mask getty@ttyAMA0 \
+    && systemctl mask system-serial\\x2dgetty.slice
+
+RUN bootc container lint
